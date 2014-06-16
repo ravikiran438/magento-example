@@ -1,0 +1,116 @@
+#!/bin/bash
+# This deploy hook gets executed after dependencies are resolved and the
+# build hook has been run but before the application has been started back
+# up again.  This script gets executed directly, so it could be python, php,
+# ruby, etc.
+
+# Install the sample Magento data if it has not been setup
+
+set -e
+
+export SAMPLE_NAME=magento-sample-data-1.9.0.0
+MAGENTO_ADMIN_USERNAME="admin"
+MAGENTO_ADMIN_PASSWORD="OpenShiftAdmin123"
+
+if [ "$OPENSHIFT_APP_DNS" == "$OPENSHIFT_GEAR_DNS" ]
+then
+  if [ ! -f ${OPENSHIFT_DATA_DIR}.magento-sample-installed ]
+  then
+    echo "Downloading magento-sample-data-1.9.0.0.tar.gz ..."
+    curl -o ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}.tar.gz http://www.magentocommerce.com/downloads/assets/1.9.0.0/magento-sample-data-1.9.0.0.tar.gz
+    echo "Extracting sample data"
+    tar xvzf ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}.tar.gz -C $OPENSHIFT_TMP_DIR 2>&1 >/dev/null
+    echo "Deleting sample data tar ball"
+    rm -rf ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}.tar.gz
+
+    # Move the media and skin folder into its correct place
+    cp -r ${OPENSHIFT_REPO_DIR}misc/media $OPENSHIFT_DATA_DIR
+    cp -r ${OPENSHIFT_REPO_DIR}misc/skin $OPENSHIFT_DATA_DIR
+    cp -r ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}/media/* ${OPENSHIFT_DATA_DIR}media
+    cp -r ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}/skin/* ${OPENSHIFT_DATA_DIR}skin
+    chmod -R o+w ${OPENSHIFT_DATA_DIR}media
+    chmod -R o+w ${OPENSHIFT_DATA_DIR}skin
+  fi
+elif [ -d ${OPENSHIFT_REPO_DIR}.openshift/magento/media ]
+then
+  rm -rf ${OPENSHIFT_DATA_DIR}media
+  cp -r ${OPENSHIFT_REPO_DIR}.openshift/magento/media ${OPENSHIFT_DATA_DIR}
+  chmod -R o+w ${OPENSHIFT_DATA_DIR}media
+elif [ -d ${OPENSHIFT_REPO_DIR}.openshift/magento/skin ]
+then
+  rm -rf ${OPENSHIFT_DATA_DIR}skin
+  cp -r ${OPENSHIFT_REPO_DIR}.openshift/magento/skin ${OPENSHIFT_DATA_DIR}
+  chmod -R o+w ${OPENSHIFT_DATA_DIR}skin
+fi
+
+# If the symlink to the media folder doesn't exist, create it
+if [ ! -L ${OPENSHIFT_DATA_DIR}media ]; then
+  ln -s ${OPENSHIFT_DATA_DIR}media ${OPENSHIFT_REPO_DIR}php/media
+fi
+
+# If the symlink to the skin folder doesn't exist, create it
+if [ ! -L ${OPENSHIFT_DATA_DIR}skin ]; then
+  ln -s ${OPENSHIFT_DATA_DIR}skin ${OPENSHIFT_REPO_DIR}php/skin
+fi
+
+# Check and wait for MySQL
+if [ -z "$OPENSHIFT_MYSQL_DB_HOST" ]
+then
+    echo 1>&2
+    echo "Could not find mysql database.  Please run:" 1>&2
+    echo "rhc cartridge add -a $OPENSHIFT_APP_NAME -c mysql-5.5" 1>&2
+    echo "then make a sample commit (add whitespace somewhere) and re-push" 1>&2
+    echo 1>&2
+    exit 5
+fi
+
+if [ "$OPENSHIFT_APP_DNS" != "$OPENSHIFT_GEAR_DNS" ]
+then
+  touch ${OPENSHIFT_DATA_DIR}.magento-sample-installed
+elif [ ! -f ${OPENSHIFT_DATA_DIR}.magento-sample-installed ]
+then
+  echo "Poulating database"
+  mysql -h${OPENSHIFT_MYSQL_DB_HOST} -P${OPENSHIFT_MYSQL_DB_PORT} -u${OPENSHIFT_MYSQL_DB_USERNAME} -p${OPENSHIFT_MYSQL_DB_PASSWORD} ${OPENSHIFT_APP_NAME} < ${OPENSHIFT_TMP_DIR}${SAMPLE_NAME}/magento_sample_data_for_1.9.0.0.sql
+
+  echo "Magento admin password: $MAGENTO_ADMIN_PASSWORD"
+
+  echo "Configuring Magento for first use"
+  php -f ${OPENSHIFT_REPO_DIR}php/install.php -- \
+    --license_agreement_accepted "yes" \
+    --locale "en_US" \
+    --timezone "America/New_York" \
+    --default_currency "USD" \
+    --db_host "$OPENSHIFT_MYSQL_DB_HOST:$OPENSHIFT_MYSQL_DB_PORT" \
+    --db_name "$OPENSHIFT_APP_NAME" \
+    --db_user "$OPENSHIFT_MYSQL_DB_USERNAME" \
+    --db_pass "$OPENSHIFT_MYSQL_DB_PASSWORD" \
+    --skip_url_validation \
+    --url "http://$OPENSHIFT_APP_DNS" \
+    --use_rewrites "yes" \
+    --use_secure "yes" \
+    --enable_charts \
+    --secure_base_url "https://$OPENSHIFT_APP_DNS" \
+    --use_secure_admin "yes" \
+    --admin_firstname "Test" \
+    --admin_lastname "Magento" \
+    --admin_email "foo@bar.com" \
+    --admin_username "$MAGENTO_ADMIN_USERNAME" \
+    --admin_password "$MAGENTO_ADMIN_PASSWORD"
+
+  touch ${OPENSHIFT_DATA_DIR}.magento-sample-installed
+
+fi
+
+if [ "$OPENSHIFT_APP_DNS" != "$OPENSHIFT_GEAR_DNS" ]
+then
+  if [ -f ${OPENSHIFT_REPO_DIR}.openshift/magento/local.xml ]
+  then
+    cp ${OPENSHIFT_REPO_DIR}.openshift/magento/local.xml ${OPENSHIFT_DATA_DIR}
+    rm -f ${OPENSHIFT_REPO_DIR}php/app/etc/local.xml
+  fi
+elif [ -f "${OPENSHIFT_REPO_DIR}php/app/etc/local.xml" ]
+then
+  mv ${OPENSHIFT_REPO_DIR}php/app/etc/local.xml ${OPENSHIFT_DATA_DIR}
+fi
+ln -sf ${OPENSHIFT_DATA_DIR}local.xml ${OPENSHIFT_REPO_DIR}php/app/etc/local.xml
+

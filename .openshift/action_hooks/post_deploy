@@ -1,0 +1,7 @@
+#!/bin/bash
+# This is a simple post deploy hook executed after your application 
+# is deployed and started.  This script gets executed directly, so 
+# it could be python, php, ruby, etc.
+
+# Reindex DB
+php ${OPENSHIFT_REPO_DIR}php/shell/indexer.php reindexall
